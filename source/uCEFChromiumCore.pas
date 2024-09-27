@@ -55,7 +55,6 @@ type
       FMediaObserverReg         : ICefRegistration;
       FDevToolsMsgObserver      : ICefDevToolsMessageObserver;
       FDevToolsMsgObserverReg   : ICefRegistration;
-      FExtensionHandler         : ICefExtensionHandler;
       FDefaultUrl               : ustring;
       FOptions                  : TChromiumOptions;
       FFontOptions              : TChromiumFontOptions;
@@ -115,6 +114,11 @@ type
       FEnableFocusDelayMs       : cardinal;
       FComponentID              : integer;
       FDownloadBubble           : TCefState;
+      FHTTPSUpgrade             : TCefState;
+      FHSTSPolicyBypassList     : ustring;
+      FCredentialsService       : TCefState;
+      FTryingToCloseBrowser     : boolean;
+
       {$IFDEF LINUX}
       FXDisplay                 : PXDisplay;
       {$ENDIF}
@@ -270,16 +274,6 @@ type
       FOnDevToolsRawEvent                 : TOnDevToolsEventRawEvent;
       FOnDevToolsAgentAttached            : TOnDevToolsAgentAttachedEvent;
       FOnDevToolsAgentDetached            : TOnDevToolsAgentDetachedEvent;
-
-      // ICefExtensionHandler
-      FOnExtensionLoadFailed              : TOnExtensionLoadFailedEvent;
-      FOnExtensionLoaded                  : TOnExtensionLoadedEvent;
-      FOnExtensionUnloaded                : TOnExtensionUnloadedEvent;
-      FOnExtensionBeforeBackgroundBrowser : TOnBeforeBackgroundBrowserEvent;
-      FOnExtensionBeforeBrowser           : TOnBeforeBrowserEvent;
-      FOnExtensionGetActiveBrowser        : TOnGetActiveBrowserEvent;
-      FOnExtensionCanAccessBrowser        : TOnCanAccessBrowserEvent;
-      FOnExtensionGetExtensionResource    : TOnGetExtensionResourceEvent;
 
       // ICefPrintHandler
       FOnPrintStart                       : TOnPrintStartEvent;
@@ -442,13 +436,11 @@ type
       procedure DestroyResourceRequestHandler;
       procedure DestroyMediaObserver;
       procedure DestroyDevToolsMsgObserver;
-      procedure DestroyExtensionHandler;
       procedure DestroyAllHandlersAndObservers;
 
       procedure CreateResourceRequestHandler; virtual;
       procedure CreateMediaObserver; virtual;
       procedure CreateDevToolsMsgObserver; virtual;
-      procedure CreateExtensionHandler; virtual;
       procedure CreateRequestContextHandler; virtual;
       procedure CreateOptionsClasses; virtual;
       procedure CreateSyncObjects; virtual;
@@ -646,16 +638,6 @@ type
       procedure doOnDevToolsAgentAttached(const browser: ICefBrowser); virtual;
       procedure doOnDevToolsAgentDetached(const browser: ICefBrowser); virtual;
 
-      // ICefExtensionHandler
-      procedure doOnExtensionLoadFailed(result: TCefErrorcode);
-      procedure doOnExtensionLoaded(const extension: ICefExtension);
-      procedure doOnExtensionUnloaded(const extension: ICefExtension);
-      function  doOnExtensionBeforeBackgroundBrowser(const extension: ICefExtension; const url: ustring; var client: ICefClient; var settings: TCefBrowserSettings) : boolean;
-      function  doOnExtensionBeforeBrowser(const extension: ICefExtension; const browser, active_browser: ICefBrowser; index: Integer; const url: ustring; active: boolean; var windowInfo: TCefWindowInfo; var client: ICefClient; var settings: TCefBrowserSettings) : boolean;
-      procedure doOnExtensionGetActiveBrowser(const extension: ICefExtension; const browser: ICefBrowser; include_incognito: boolean; var aRsltBrowser: ICefBrowser);
-      function  doOnExtensionCanAccessBrowser(const extension: ICefExtension; const browser: ICefBrowser; include_incognito: boolean; const target_browser: ICefBrowser): boolean;
-      function  doOnExtensionGetExtensionResource(const extension: ICefExtension; const browser: ICefBrowser; const file_: ustring; const callback: ICefGetExtensionResourceCallback): boolean;
-
       // ICefPrintHandler
       procedure doOnPrintStart(const browser: ICefBrowser);
       procedure doOnPrintSettings(const browser: ICefBrowser; const settings: ICefPrintSettings; getDefaults: boolean);
@@ -713,6 +695,7 @@ type
       procedure doSetAudioMuted(aValue : boolean); virtual;
       procedure doToggleAudioMuted; virtual;
       procedure doEnableFocus; virtual;
+      function  doTryCloseBrowser : boolean; virtual;
 
       function  MustCreateAudioHandler : boolean; virtual;
       function  MustCreateCommandHandler : boolean; virtual;
@@ -733,7 +716,6 @@ type
       function  MustCreateResourceRequestHandler : boolean; virtual;
       function  MustCreateCookieAccessFilter : boolean; virtual;
       function  MustCreateMediaObserver : boolean; virtual;
-      function  MustCreateExtensionHandler : boolean; virtual;
       function  MustCreatePrintHandler : boolean; virtual;
       function  MustCreateFrameHandler : boolean; virtual;
       function  MustCreatePermissionHandler : boolean; virtual;
@@ -903,23 +885,80 @@ type
       /// key event.
       /// </summary>
       /// <param name="type_">Type of the key event.</param>
-      /// <param name="modifiers">Bit field representing pressed modifier keys. Alt=1, Ctrl=2, Meta/Command=4, Shift=8.</param>
-      /// <param name="windowsVirtualKeyCode">Windows virtual key code.</param>
-      /// <param name="nativeVirtualKeyCode">Native virtual key code.</param>
+      /// <param name="modifiers">Bit field representing pressed modifier keys. Alt=1, Ctrl=2, Meta/Command=4, Shift=8.(default: 0).</param>
       /// <param name="timestamp">Time at which the event occurred.</param>
-      /// <param name="location">Whether the event was from the left or right side of the keyboard. 1=Left, 2=Right.</param>
-      /// <param name="autoRepeat">Whether the event was generated from auto repeat.</param>
-      /// <param name="isKeypad">Whether the event was generated from the keypad.</param>
-      /// <param name="isSystemKey">Whether the event was a system key event.</param>
-      /// <param name="text">Text as generated by processing a virtual key code with a keyboard layout. Not needed for for keyUp and rawKeyDown events.</param>
-      /// <param name="unmodifiedtext">Text that would have been generated by the keyboard if no modifiers were pressed (except for shift). Useful for shortcut (accelerator) key handling.</param>
-      /// <param name="keyIdentifier">Unique key identifier (e.g., 'U+0041').</param>
-      /// <param name="code">Unique DOM defined string value for each physical key (e.g., 'KeyA').</param>
-      /// <param name="key">Unique DOM defined string value describing the meaning of the key in the context of active modifiers, keyboard layout, etc (e.g., 'AltGr').</param>
+      /// <param name="text">Text as generated by processing a virtual key code with a keyboard layout. Not needed for for keyUp and rawKeyDown events.(default: "")</param>
+      /// <param name="unmodifiedtext">Text that would have been generated by the keyboard if no modifiers were pressed (except for shift). Useful for shortcut (accelerator) key handling.(default: "").</param>
+      /// <param name="keyIdentifier">Unique key identifier (e.g., 'U+0041').(default: "").</param>
+      /// <param name="code">Unique DOM defined string value for each physical key (e.g., 'KeyA').(default: "").</param>
+      /// <param name="key">Unique DOM defined string value describing the meaning of the key in the context of active modifiers, keyboard layout, etc (e.g., 'AltGr').(default: "").</param>
+      /// <param name="windowsVirtualKeyCode">Windows virtual key code.(default: 0).</param>
+      /// <param name="nativeVirtualKeyCode">Native virtual key code.(default: 0).</param>
+      /// <param name="autoRepeat">Whether the event was generated from auto repeat.(default: false).</param>
+      /// <param name="isKeypad">Whether the event was generated from the keypad.(default: false).</param>
+      /// <param name="isSystemKey">Whether the event was a system key event.(default: false).</param>
+      /// <param name="location">Whether the event was from the left or right side of the keyboard. 1=Left, 2=Right.(default: 0).</param>
+      /// <param name="commands">Editing commands to send with the key event (e.g., 'selectAll') (default: []). These are related to but not equal the command names used in document.execCommand and NSStandardKeyBindingResponding. See https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/core/editing/commands/editor_command_names.h for valid command names.</param>
       /// <remarks>
       /// <para><see href="https://chromedevtools.github.io/devtools-protocol/1-3/Input/#method-dispatchKeyEvent">See the "Input.dispatchKeyEvent" DevTools method.</see></para>
       /// </remarks>
-      procedure   SimulateKeyEvent(type_: TSimulatedCefKeyEventType; modifiers, windowsVirtualKeyCode, nativeVirtualKeyCode: integer; timestamp: integer = 0; location: integer = 0; autoRepeat: boolean = False; isKeypad: boolean = False; isSystemKey: boolean = False; const text: ustring = ''; const unmodifiedtext: ustring = ''; const keyIdentifier: ustring = ''; const code: ustring = ''; const key: ustring = '');
+      procedure   SimulateKeyEvent(type_: TSimulatedCefKeyEventType; modifiers: integer = CEF_MOUSETOUCH_EVENT_MODIFIERS_NONE;
+                                   timestamp: single = 0; const text: ustring = ''; const unmodifiedtext: ustring = '';
+                                   const keyIdentifier: ustring = ''; const code: ustring = ''; const key: ustring = '';
+                                   windowsVirtualKeyCode: integer = 0; nativeVirtualKeyCode: integer = 0;
+                                   autoRepeat: boolean = False; isKeypad: boolean = False; isSystemKey: boolean = False;
+                                   location: TCefKeyLocation = CEF_KEYLOCATION_NONE; commands: TCefEditingCommand = ecNone);
+      /// <summary>
+      /// Dispatches a key event to the page using the "Input.dispatchKeyEvent"
+      /// DevTools method. The browser has to be focused before simulating any
+      /// key event.
+      /// </summary>
+      /// <param name="type_">Type of the mouse event.</param>
+      /// <param name="x">X coordinate of the event relative to the main frame's viewport in CSS pixels.</param>
+      /// <param name="y">Y coordinate of the event relative to the main frame's viewport in CSS pixels. 0 refers to the top of the viewport and Y increases as it proceeds towards the bottom of the viewport.</param>
+      /// <param name="modifiers">Bit field representing pressed modifier keys. Alt=1, Ctrl=2, Meta/Command=4, Shift=8 (default: 0). See the CEF_MOUSETOUCH_EVENT_MODIFIERS_* constants.</param>
+      /// <param name="timestamp">Time at which the event occurred.</param>
+      /// <param name="button">Mouse button (default: "none").</param>
+      /// <param name="buttons">A number indicating which buttons are pressed on the mouse when a mouse event is triggered. Left=1, Right=2, Middle=4, Back=8, Forward=16, None=0.</param>
+      /// <param name="clickCount">Number of times the mouse button was clicked (default: 0).</param>
+      /// <param name="force">The normalized pressure, which has a range of [0,1] (default: 0). </param>
+      /// <param name="tangentialPressure">The normalized tangential pressure, which has a range of [-1,1] (default: 0).</param>
+      /// <param name="tiltX">The plane angle between the Y-Z plane and the plane containing both the stylus axis and the Y axis, in degrees of the range [-90,90], a positive tiltX is to the right (default: 0).</param>
+      /// <param name="tiltY">The plane angle between the X-Z plane and the plane containing both the stylus axis and the X axis, in degrees of the range [-90,90], a positive tiltY is towards the user (default: 0).</param>
+      /// <param name="twist">The clockwise rotation of a pen stylus around its own major axis, in degrees in the range [0,359] (default: 0).</param>
+      /// <param name="deltaX">X delta in CSS pixels for mouse wheel event (default: 0).</param>
+      /// <param name="deltaY">Y delta in CSS pixels for mouse wheel event (default: 0).</param>
+      /// <param name="pointerType">Pointer type (default: "mouse").</param>
+      /// <remarks>
+      /// <para><see href="https://chromedevtools.github.io/devtools-protocol/1-3/Input/#method-dispatchKeyEvent">See the "Input.dispatchKeyEvent" DevTools method.</see></para>
+      /// </remarks>
+      procedure   SimulateMouseEvent(type_: TCefSimulatedMouseEventType; x, y: single; modifiers: integer = CEF_MOUSETOUCH_EVENT_MODIFIERS_NONE;
+                                     timestamp: single = 0; button: TCefSimulatedMouseButton = CEF_SIMULATEDMOUSEBUTTON_NONE;
+                                     buttons: integer = CEF_PRESSED_MOUSE_BUTTONS_NONE; clickCount: integer = 0; force: single = 0;
+                                     tangentialPressure: single = 0; tiltX: single = 0; tiltY: single = 0; twist: integer = 0;
+                                     deltaX: single = 0; deltaY: single = 0; pointerType: TCefSimulatedPointerType = CEF_SIMULATEDPOINTERTYPE_MOUSE);
+      /// <summary>
+      /// Dispatches a touch event to the page using the "Input.dispatchTouchEvent"
+      /// DevTools method. The browser has to be focused before simulating any
+      /// key event.
+      /// </summary>
+      /// <param name="type_">Type of touch event.</param>
+      /// <param name="touchPoints">Array of touch points.</param>
+      /// <param name="modifiers">Bit field representing pressed modifier keys. Alt=1, Ctrl=2, Meta/Command=4, Shift=8.(default: 0). See the CEF_MOUSETOUCH_EVENT_MODIFIERS_* constants.</param>
+      /// <param name="timestamp">Time at which the event occurred.</param>
+      /// <remarks>
+      /// <para><see href="https://chromedevtools.github.io/devtools-protocol/tot/Input/#method-dispatchTouchEvent">See the "Input.dispatchTouchEvent" DevTools method.</see></para>
+      /// </remarks>
+      procedure   SimulateTouchEvent(type_: TCefSimulatedTouchEventType; var touchPoints: TCefSimulatedTouchPointArray;
+                                     modifiers: integer = CEF_MOUSETOUCH_EVENT_MODIFIERS_NONE; timestamp: single = 0);
+      /// <summary>
+      /// Simulate editing commands using the "Input.dispatchKeyEvent" DevTools method.
+      /// </summary>
+      /// <remarks>
+      /// <para><see href="https://chromedevtools.github.io/devtools-protocol/1-3/Input/#method-dispatchKeyEvent">See the "Input.dispatchKeyEvent" DevTools method.</see></para>
+      /// <para><see href="https://source.chromium.org/chromium/chromium/src/+/master:third_party/blink/renderer/core/editing/commands/editor_command_names.h">See the Chromium sources.</see></para>
+      /// </remarks>
+      procedure   SimulateEditingCommand(command : TCefEditingCommand);
       /// <summary>
       /// <para>Clears all certificate exceptions that were added as part of handling
       /// OnCertificateError. If you call this it is recommended that you also call
@@ -1283,12 +1322,12 @@ type
       procedure   Invalidate(type_: TCefPaintElementType = PET_VIEW);
       /// <summary>
       /// Requests the renderer to exit browser fullscreen. In most cases exiting
-      /// window fullscreen should also exit browser fullscreen. With the Alloy
-      /// runtime this function should be called in response to a user action such
-      /// as clicking the green traffic light button on MacOS
+      /// window fullscreen should also exit browser fullscreen. With Alloy style
+      /// this function should be called in response to a user action such as
+      /// clicking the green traffic light button on MacOS
       /// (ICefWindowDelegate.OnWindowFullscreenTransition callback) or pressing
-      /// the "ESC" key (ICefKeyboardHandler.OnPreKeyEvent callback). With the
-      /// Chrome runtime these standard exit actions are handled internally but
+      /// the "ESC" key (ICefKeyboardHandler.OnPreKeyEvent callback). With
+      /// Chrome style these standard exit actions are handled internally but
       /// new/additional user actions can use this function. Set |will_cause_resize|
       /// to true (1) if exiting browser fullscreen will cause a view resize.
       /// </summary>
@@ -1296,7 +1335,7 @@ type
       /// <summary>
       /// Returns true (1) if a Chrome command is supported and enabled. Values for
       /// |command_id| can be found in the cef_command_ids.h file. This function can
-      /// only be called on the UI thread. Only used with the Chrome runtime.
+      /// only be called on the UI thread. Only used with Chrome style.
       /// </summary>
       /// <remarks>
       /// <para><see cref="uCEFConstants">See the IDC_* constants in uCEFConstants.pas for all the |command_id| values.</see></para>
@@ -1306,7 +1345,7 @@ type
       /// <summary>
       /// Execute a Chrome command. Values for |command_id| can be found in the
       /// cef_command_ids.h file. |disposition| provides information about the
-      /// intended command target. Only used with the Chrome runtime.
+      /// intended command target. Only used with Chrome style.
       /// </summary>
       /// <remarks>
       /// <para><see cref="uCEFConstants">See the IDC_* constants in uCEFConstants.pas for all the |command_id| values.</see></para>
@@ -1584,92 +1623,6 @@ type
       /// </summary>
       procedure   GetDeviceInfo(const aMediaSink: ICefMediaSink);
       /// <summary>
-      /// <para>Load an extension.</para>
-      /// <para>If extension resources will be read from disk using the default load
-      /// implementation then |root_directory| should be the absolute path to the
-      /// extension resources directory and |manifest| should be NULL. If extension
-      /// resources will be provided by the client (e.g. via cef_request_handler_t
-      /// and/or cef_extension_handler_t) then |root_directory| should be a path
-      /// component unique to the extension (if not absolute this will be internally
-      /// prefixed with the PK_DIR_RESOURCES path) and |manifest| should contain the
-      /// contents that would otherwise be read from the "manifest.json" file on
-      /// disk.</para>
-      /// <para>The loaded extension will be accessible in all contexts sharing the same
-      /// storage (HasExtension returns true (1)). However, only the context on
-      /// which this function was called is considered the loader (DidLoadExtension
-      /// returns true (1)) and only the loader will receive
-      /// TCustomRequestContextHandler callbacks for the extension.</para>
-      /// <para>TCustomExtensionHandler.OnExtensionLoaded will be called on load success
-      /// or TCustomExtensionHandler.OnExtensionLoadFailed will be called on load
-      /// failure.</para>
-      /// <para>If the extension specifies a background script via the "background"
-      /// manifest key then TCustomExtensionHandler.OnBeforeBackgroundBrowser will
-      /// be called to create the background browser. See that function for
-      /// additional information about background scripts.</para>
-      /// <para>For visible extension views the client application should evaluate the
-      /// manifest to determine the correct extension URL to load and then pass that
-      /// URL to the ICefBrowserHost.CreateBrowser* function after the extension
-      /// has loaded. For example, the client can look for the "browser_action"
-      /// manifest key as documented at
-      /// https://developer.chrome.com/extensions/browserAction. Extension URLs take
-      /// the form "chrome-extension://<extension_id>/<path>".</para>
-      /// <para>Browsers that host extensions differ from normal browsers as follows:</para>
-      /// <code>
-      ///  - Can access chrome.* JavaScript APIs if allowed by the manifest. Visit
-      ///    chrome://extensions-support for the list of extension APIs currently
-      ///    supported by CEF.
-      ///  - Main frame navigation to non-extension content is blocked.
-      ///  - Pinch-zooming is disabled.
-      ///  - ICefBrowserHost.GetExtension returns the hosted extension.
-      ///  - ICefBrowserHost.IsBackgroundHost returns true for background hosts.
-      /// </code>
-      /// <para>See https://developer.chrome.com/extensions for extension implementation
-      /// and usage documentation.</para>
-      /// </summary>
-      /// <remarks>
-      /// <para>WARNING: This function is deprecated and will be removed in ~M127.</para>
-      /// </remarks>
-      function    LoadExtension(const root_directory: ustring; const manifest: ICefDictionaryValue = nil; const handler: ICefExtensionHandler = nil; const requestContext : ICefRequestContext = nil) : boolean; deprecated;
-      /// <summary>
-      /// <para>Returns true (1) if this context was used to load the extension identified
-      /// by |extension_id|. Other contexts sharing the same storage will also have
-      /// access to the extension (see HasExtension). This function must be called
-      /// on the browser process UI thread.</para>
-      /// </summary>
-      /// <remarks>
-      /// <para>WARNING: This function is deprecated and will be removed in ~M127.</para>
-      /// </remarks>
-      function    DidLoadExtension(const extension_id: ustring): boolean; deprecated;
-      /// <summary>
-      /// <para>Returns true (1) if this context has access to the extension identified by
-      /// |extension_id|. This may not be the context that was used to load the
-      /// extension (see DidLoadExtension). This function must be called on the
-      /// browser process UI thread.</para>
-      /// </summary>
-      /// <remarks>
-      /// <para>WARNING: This function is deprecated and will be removed in ~M127.</para>
-      /// </remarks>
-      function    HasExtension(const extension_id: ustring): boolean; deprecated;
-      /// <summary>
-      /// Retrieve the list of all extensions that this context has access to (see
-      /// HasExtension). |extension_ids| will be populated with the list of
-      /// extension ID values. Returns true (1) on success. This function must be
-      /// called on the browser process UI thread.</para>
-      /// </summary>
-      /// <remarks>
-      /// <para>WARNING: This function is deprecated and will be removed in ~M127.</para>
-      /// </remarks>
-      function    GetExtensions(const extension_ids: TStringList): boolean; deprecated;
-      /// <summary>
-      /// <para>Returns the extension matching |extension_id| or NULL if no matching
-      /// extension is accessible in this context (see HasExtension). This function
-      /// must be called on the browser process UI thread.</para>
-      /// </summary>
-      /// <remarks>
-      /// <para>WARNING: This function is deprecated and will be removed in ~M127.</para>
-      /// </remarks>
-      function    GetExtension(const extension_id: ustring): ICefExtension; deprecated;
-      /// <summary>
       /// Returns the current value for |content_type| that applies for the
       /// specified URLs. If both URLs are NULL the default value will be returned.
       /// Returns nullptr if no value is configured. Must be called on the browser
@@ -1790,7 +1743,7 @@ type
       /// <remarks>
       /// <para>This property can only be read on the CEF UI thread.</para>
       /// </remarks>
-      property RuntimeStyle                   : TCefRuntimeStyle             read GetRuntimeStyle              write SetRuntimeStyle;
+      property  RuntimeStyle                   : TCefRuntimeStyle             read GetRuntimeStyle              write SetRuntimeStyle;
       /// <summary>
       /// Returns a ICefRequestContext instance used by the selected browser.
       /// </summary>
@@ -1815,10 +1768,6 @@ type
       /// Returns the ICefRegistration instance obtained when the default DevToolsMessageObserver was added.
       /// </summary>
       property  DevToolsMsgObserverReg        : ICefRegistration             read FDevToolsMsgObserverReg;
-      /// <summary>
-      /// Returns a ICefExtensionHandler instance used by the selected browser.
-      /// </summary>
-      property  ExtensionHandler              : ICefExtensionHandler         read FExtensionHandler;
       /// <summary>
       ///	Returns the value of GlobalCEFApp.MultiThreadedMessageLoop.
       /// </summary>
@@ -1922,8 +1871,7 @@ type
       property  ZoomLevel                     : double                       read GetZoomLevel                 write SetZoomLevel;
       /// <summary>
       /// Get the default zoom level. This value will be 0.0 by default but can be
-      /// configured with the Chrome runtime. This function can only be called on
-      /// the CEF UI thread.
+      /// configured. This function can only be called on the UI thread.
       /// </summary>
       property  DefaultZoomLevel              : double                       read GetDefaultZoomLevel;
       /// <summary>
@@ -2149,9 +2097,21 @@ type
       /// </summary>
       property  MaxConnectionsPerProxy        : integer                      read FMaxConnectionsPerProxy      write SetMaxConnectionsPerProxy;
       /// <summary>
-      /// Enable the file download bubble when using the Chrome runtime.
+      /// Enable the file download bubble when using Chrome style.
       /// </summary>
       property DownloadBubble                 : TCefState                    read FDownloadBubble              write FDownloadBubble;
+      /// <summary>
+      /// Automatically upgrade to HTTPS connections.
+      /// </summary>
+      property HTTPSUpgrade                   : TCefState                    read FHTTPSUpgrade                write FHTTPSUpgrade;
+      /// <summary>
+      /// List of comma-delimited  single-label hostnames that will skip the check to possibly upgrade from http to https.
+      /// </summary>
+      property HSTSPolicyBypassList           : ustring                      read FHSTSPolicyBypassList        write FHSTSPolicyBypassList;
+      /// <summary>
+      /// This service shows a dialog to save the usernames and passwords in Chrome style.
+      /// </summary>
+      property CredentialsService             : TCefState                    read FCredentialsService          write FCredentialsService;
 
     published
       /// <summary>
@@ -2478,13 +2438,12 @@ type
       /// Called when web content in the page has toggled fullscreen mode. If
       /// |fullscreen| is true (1) the content will automatically be sized to fill
       /// the browser content area. If |fullscreen| is false (0) the content will
-      /// automatically return to its original size and position. With the Alloy
-      /// runtime the client is responsible for triggering the fullscreen transition
-      /// (for example, by calling ICefWindow.SetFullscreen when using Views).
-      /// With the Chrome runtime the fullscreen transition will be triggered
-      /// automatically. The ICefWindowDelegate.OnWindowFullscreenTransition
-      /// function will be called during the fullscreen transition for notification
-      /// purposes.
+      /// automatically return to its original size and position. With Alloy style
+      /// the client is responsible for triggering the fullscreen transition (for
+      /// example, by calling ICefWindow.SetFullscreen when using Views). With
+      /// Chrome style the fullscreen transition will be triggered automatically.
+      /// The ICefWindowDelegate.OnWindowFullscreenTransition function will be
+      /// called during the fullscreen transition for notification purposes.
       /// </summary>
       /// <remarks>
       /// <para>This event will be called on the browser process CEF UI thread.</para>
@@ -2698,7 +2657,7 @@ type
       /// <para>Views-hosted source browsers will create Views-hosted DevTools popups
       /// unless |use_default_window| is set to to true (1). DevTools popups can be
       /// blocked by returning true (1) from ICefCommandHandler.OnChromeCommand
-      /// for IDC_DEV_TOOLS. Only used with the Chrome runtime.</para>
+      /// for IDC_DEV_TOOLS. Only used with Chrome style.</para>
       /// </summary>
       /// <remarks>
       /// <para>This event will be called on the browser process CEF UI thread.</para>
@@ -2927,20 +2886,19 @@ type
       /// Called on the browser process UI thread when the render process is
       /// unresponsive as indicated by a lack of input event processing for at least
       /// 15 seconds. Return false (0) for the default behavior which is an
-      /// indefinite wait with the Alloy runtime or display of the "Page
-      /// unresponsive" dialog with the Chrome runtime. Return true (1) and don't
-      /// execute the callback for an indefinite wait without display of the Chrome
-      /// runtime dialog. Return true (1) and call
-      /// ICefUnresponsiveProcessCallback.Wait either in this function or at a
-      /// later time to reset the wait timer, potentially triggering another call to
-      /// this function if the process remains unresponsive. Return true (1) and
-      /// call ICefUnresponsiveProcessCallback.Terminate either in this
-      /// function or at a later time to terminate the unresponsive process,
-      /// resulting in a call to OnRenderProcessTerminated.
-      /// OnRenderProcessResponsive will be called if the process becomes responsive
-      /// after this function is called. This functionality depends on the hang
-      /// monitor which can be disabled by passing the `--disable-hang-monitor`
-      /// command-line flag or setting GlobalCEFApp.DisableHangMonitor to True.
+      /// indefinite wait with Alloy style or display of the "Page unresponsive"
+      /// dialog with Chrome style. Return true (1) and don't execute the callback
+      /// for an indefinite wait without display of the Chrome style dialog. Return
+      /// true (1) and call ICefUnresponsiveProcessCallback.Wait either in this
+      /// function or at a later time to reset the wait timer, potentially
+      /// triggering another call to this function if the process remains
+      /// unresponsive. Return true (1) and call
+      /// ICefUnresponsiveProcessCallback.Terminate either in this function or
+      /// at a later time to terminate the unresponsive process, resulting in a call
+      /// to OnRenderProcessTerminated. OnRenderProcessResponsive will be called if
+      /// the process becomes responsive after this function is called. This
+      /// functionality depends on the hang monitor which can be disabled by passing
+      /// the `--disable-hang-monitor` command-line flag.
       /// </summary>
       /// <remarks>
       /// <para>This event will be called on the browser process CEF UI thread.</para>
@@ -3650,123 +3608,6 @@ type
       /// <para><see href="https://bitbucket.org/chromiumembedded/cef/src/master/include/capi/cef_devtools_message_observer_capi.h">CEF source file: /include/capi/cef_devtools_message_observer_capi.h (cef_dev_tools_message_observer_t)</see></para>
       /// </remarks>
       property OnDevToolsAgentDetached                : TOnDevToolsAgentDetachedEvent     read FOnDevToolsAgentDetached                write FOnDevToolsAgentDetached;
-      /// <summary>
-      /// Called if the ICefRequestContext.LoadExtension request fails. |result|
-      /// will be the error code.
-      /// </summary>
-      /// <remarks>
-      /// <para>WARNING: This function is deprecated and will be removed in ~M127.</para>
-      /// <para>This event will be called on the browser process CEF UI thread.</para>
-      /// <para><see href="https://bitbucket.org/chromiumembedded/cef/src/master/include/capi/cef_extension_handler_capi.h">CEF source file: /include/capi/cef_extension_handler_capi.h (cef_extension_handler_t)</see></para>
-      /// </remarks>
-      property OnExtensionLoadFailed                  : TOnExtensionLoadFailedEvent       read FOnExtensionLoadFailed                  write FOnExtensionLoadFailed;
-      /// <summary>
-      /// Called if the ICefRequestContext.LoadExtension request succeeds.
-      /// |extension| is the loaded extension.
-      /// </summary>
-      /// <remarks>
-      /// <para>WARNING: This function is deprecated and will be removed in ~M127.</para>
-      /// <para>This event will be called on the browser process CEF UI thread.</para>
-      /// <para><see href="https://bitbucket.org/chromiumembedded/cef/src/master/include/capi/cef_extension_handler_capi.h">CEF source file: /include/capi/cef_extension_handler_capi.h (cef_extension_handler_t)</see></para>
-      /// </remarks>
-      property OnExtensionLoaded                      : TOnExtensionLoadedEvent           read FOnExtensionLoaded                      write FOnExtensionLoaded;
-      /// <summary>
-      /// Called after the ICefExtension.Unload request has completed.
-      /// </summary>
-      /// <remarks>
-      /// <para>WARNING: This function is deprecated and will be removed in ~M127.</para>
-      /// <para>This event will be called on the browser process CEF UI thread.</para>
-      /// <para><see href="https://bitbucket.org/chromiumembedded/cef/src/master/include/capi/cef_extension_handler_capi.h">CEF source file: /include/capi/cef_extension_handler_capi.h (cef_extension_handler_t)</see></para>
-      /// </remarks>
-      property OnExtensionUnloaded                    : TOnExtensionUnloadedEvent         read FOnExtensionUnloaded                    write FOnExtensionUnloaded;
-      /// <summary>
-      /// Called when an extension needs a browser to host a background script
-      /// specified via the "background" manifest key. The browser will have no
-      /// visible window and cannot be displayed. |extension| is the extension that
-      /// is loading the background script. |url| is an internally generated
-      /// reference to an HTML page that will be used to load the background script
-      /// via a "<script>" src attribute. To allow creation of the browser
-      /// optionally modify |client| and |settings| and return false (0). To cancel
-      /// creation of the browser (and consequently cancel load of the background
-      /// script) return true (1). Successful creation will be indicated by a call
-      /// to ICefLifeSpanHandler.OnAfterCreated, and
-      /// ICefBrowserHost.IsBackgroundHost will return true (1) for the
-      /// resulting browser. See https://developer.chrome.com/extensions/event_pages
-      /// for more information about extension background script usage.
-      /// </summary>
-      /// <remarks>
-      /// <para>WARNING: This function is deprecated and will be removed in ~M127.</para>
-      /// <para>This event will be called on the browser process CEF UI thread.</para>
-      /// <para><see href="https://bitbucket.org/chromiumembedded/cef/src/master/include/capi/cef_extension_handler_capi.h">CEF source file: /include/capi/cef_extension_handler_capi.h (cef_extension_handler_t)</see></para>
-      /// </remarks>
-      property OnExtensionBeforeBackgroundBrowser     : TOnBeforeBackgroundBrowserEvent   read FOnExtensionBeforeBackgroundBrowser     write FOnExtensionBeforeBackgroundBrowser;
-      /// <summary>
-      /// Called when an extension API (e.g. chrome.tabs.create) requests creation
-      /// of a new browser. |extension| and |browser| are the source of the API
-      /// call. |active_browser| may optionally be specified via the windowId
-      /// property or returned via the get_active_browser() callback and provides
-      /// the default |client| and |settings| values for the new browser. |index| is
-      /// the position value optionally specified via the index property. |url| is
-      /// the URL that will be loaded in the browser. |active| is true (1) if the
-      /// new browser should be active when opened.  To allow creation of the
-      /// browser optionally modify |windowInfo|, |client| and |settings| and return
-      /// false (0). To cancel creation of the browser return true (1). Successful
-      /// creation will be indicated by a call to
-      /// ICefLifeSpanHandler.OnAfterCreated. Any modifications to |windowInfo|
-      /// will be ignored if |active_browser| is wrapped in a ICefBrowserView.
-      /// </summary>
-      /// <remarks>
-      /// <para>WARNING: This function is deprecated and will be removed in ~M127.</para>
-      /// <para>This event will be called on the browser process CEF UI thread.</para>
-      /// <para><see href="https://bitbucket.org/chromiumembedded/cef/src/master/include/capi/cef_extension_handler_capi.h">CEF source file: /include/capi/cef_extension_handler_capi.h (cef_extension_handler_t)</see></para>
-      /// </remarks>
-      property OnExtensionBeforeBrowser               : TOnBeforeBrowserEvent             read FOnExtensionBeforeBrowser               write FOnExtensionBeforeBrowser;
-      /// <summary>
-      /// Called when no tabId is specified to an extension API call that accepts a
-      /// tabId parameter (e.g. chrome.tabs.*). |extension| and |browser| are the
-      /// source of the API call. Return the browser that will be acted on by the
-      /// API call or return NULL to act on |browser|. The returned browser must
-      /// share the same ICefRequestContext as |browser|. Incognito browsers
-      /// should not be considered unless the source extension has incognito access
-      /// enabled, in which case |include_incognito| will be true (1).
-      /// </summary>
-      /// <remarks>
-      /// <para>WARNING: This function is deprecated and will be removed in ~M127.</para>
-      /// <para>This event will be called on the browser process CEF UI thread.</para>
-      /// <para><see href="https://bitbucket.org/chromiumembedded/cef/src/master/include/capi/cef_extension_handler_capi.h">CEF source file: /include/capi/cef_extension_handler_capi.h (cef_extension_handler_t)</see></para>
-      /// </remarks>
-      property OnExtensionGetActiveBrowser            : TOnGetActiveBrowserEvent          read FOnExtensionGetActiveBrowser            write FOnExtensionGetActiveBrowser;
-      /// <summary>
-      /// Called when the tabId associated with |target_browser| is specified to an
-      /// extension API call that accepts a tabId parameter (e.g. chrome.tabs.*).
-      /// |extension| and |browser| are the source of the API call. Return true (1)
-      /// to allow access of false (0) to deny access. Access to incognito browsers
-      /// should not be allowed unless the source extension has incognito access
-      /// enabled, in which case |include_incognito| will be true (1).
-      /// </summary>
-      /// <remarks>
-      /// <para>WARNING: This function is deprecated and will be removed in ~M127.</para>
-      /// <para>This event will be called on the browser process CEF UI thread.</para>
-      /// <para><see href="https://bitbucket.org/chromiumembedded/cef/src/master/include/capi/cef_extension_handler_capi.h">CEF source file: /include/capi/cef_extension_handler_capi.h (cef_extension_handler_t)</see></para>
-      /// </remarks>
-      property OnExtensionCanAccessBrowser            : TOnCanAccessBrowserEvent          read FOnExtensionCanAccessBrowser            write FOnExtensionCanAccessBrowser;
-      /// <summary>
-      /// Called to retrieve an extension resource that would normally be loaded
-      /// from disk (e.g. if a file parameter is specified to
-      /// chrome.tabs.executeScript). |extension| and |browser| are the source of
-      /// the resource request. |file| is the requested relative file path. To
-      /// handle the resource request return true (1) and execute |callback| either
-      /// synchronously or asynchronously. For the default behavior which reads the
-      /// resource from the extension directory on disk return false (0).
-      /// Localization substitutions will not be applied to resources handled via
-      /// this function.
-      /// </summary>
-      /// <remarks>
-      /// <para>WARNING: This function is deprecated and will be removed in ~M127.</para>
-      /// <para>This event will be called on the browser process CEF UI thread.</para>
-      /// <para><see href="https://bitbucket.org/chromiumembedded/cef/src/master/include/capi/cef_extension_handler_capi.h">CEF source file: /include/capi/cef_extension_handler_capi.h (cef_extension_handler_t)</see></para>
-      /// </remarks>
-      property OnExtensionGetExtensionResource        : TOnGetExtensionResourceEvent      read FOnExtensionGetExtensionResource        write FOnExtensionGetExtensionResource;
       {$IFDEF LINUX}
       /// <summary>
       /// Called when printing has started for the specified |browser|. This
@@ -3892,7 +3733,7 @@ type
       /// will be called after ICefContextMenuHandler.OnContextMenuCommand.
       /// </summary>
       /// <remarks>
-      /// <para>Only used with the Chrome runtime.</para>
+      /// <para>Only used with Chrome style.</para>
       /// <para>This event will be called on the browser process CEF UI thread.</para>
       /// <para><see href="https://bitbucket.org/chromiumembedded/cef/src/master/include/capi/cef_command_handler_capi.h">CEF source file: /include/capi/cef_command_handler_capi.h (cef_command_handler_t)</see></para>
       /// </remarks>
@@ -3903,7 +3744,7 @@ type
       /// menu items that would be visible by default.
       /// </summary>
       /// <remarks>
-      /// <para>Only used with the Chrome runtime.</para>
+      /// <para>Only used with Chrome style.</para>
       /// <para>This event will be called on the browser process CEF UI thread.</para>
       /// <para><see href="https://bitbucket.org/chromiumembedded/cef/src/master/include/capi/cef_command_handler_capi.h">CEF source file: /include/capi/cef_command_handler_capi.h (cef_command_handler_t)</see></para>
       /// </remarks>
@@ -3914,7 +3755,7 @@ type
       /// menu items that would be enabled by default.
       /// </summary>
       /// <remarks>
-      /// <para>Only used with the Chrome runtime.</para>
+      /// <para>Only used with Chrome style.</para>
       /// <para>This event will be called on the browser process CEF UI thread.</para>
       /// <para><see href="https://bitbucket.org/chromiumembedded/cef/src/master/include/capi/cef_command_handler_capi.h">CEF source file: /include/capi/cef_command_handler_capi.h (cef_command_handler_t)</see></para>
       /// </remarks>
@@ -3924,7 +3765,7 @@ type
       /// should be visible. Only called for icons that would be visible by default.
       /// </summary>
       /// <remarks>
-      /// <para>Only used with the Chrome runtime.</para>
+      /// <para>Only used with Chrome style.</para>
       /// <para>This event will be called on the browser process CEF UI thread.</para>
       /// <para><see href="https://bitbucket.org/chromiumembedded/cef/src/master/include/capi/cef_command_handler_capi.h">CEF source file: /include/capi/cef_command_handler_capi.h (cef_command_handler_t)</see></para>
       /// </remarks>
@@ -3934,23 +3775,25 @@ type
       /// be visible. Only called for buttons that would be visible by default.
       /// </summary>
       /// <remarks>
-      /// <para>Only used with the Chrome runtime.</para>
+      /// <para>Only used with Chrome style.</para>
       /// <para>This event will be called on the browser process CEF UI thread.</para>
       /// <para><see href="https://bitbucket.org/chromiumembedded/cef/src/master/include/capi/cef_command_handler_capi.h">CEF source file: /include/capi/cef_command_handler_capi.h (cef_command_handler_t)</see></para>
       /// </remarks>
       property OnIsChromeToolbarButtonVisible         : TOnIsChromeToolbarButtonVisibleEvent  read FOnIsChromeToolbarButtonVisible     write FOnIsChromeToolbarButtonVisible;
       /// <summary>
-      /// <para>Called when a page requests permission to access media.
-      /// |requesting_origin| is the URL origin requesting permission.</para>
+      /// <para>Called when a page requests permission to access media.</para>
+      /// <para>|requesting_origin| is the URL origin requesting permission.</para>
       /// <para>|requested_permissions| is a combination of values from
       /// TCefMediaAccessPermissionTypes that represent the requested
-      /// permissions. Return true (1) and call ICefMediaAccessCallback
+      /// permissions.</para>
+      /// <para>Return true (1) and call ICefMediaAccessCallback
       /// functions either in this function or at a later time to continue or cancel
-      /// the request. Return false (0) to proceed with default handling. With the
-      /// Chrome runtime, default handling will display the permission request UI.</para>
-      /// <para>With the Alloy runtime, default handling will deny the request. This
-      /// function will not be called if the "--enable-media-stream" command-line
-      /// switch is used to grant all permissions.</para>
+      /// the request.</para>
+      /// <para>Return false (0) to proceed with default handling. With
+      /// Chrome style, default handling will display the permission request UI.</para>
+      /// <para>With Alloy style, default handling will deny the request. This function
+      /// will not be called if the "--enable-media-stream" command-line switch is
+      /// used to grant all permissions.</para>
       /// </summary>
       /// <remarks>
       /// <para>This event will be called on the browser process CEF UI thread.</para>
@@ -3964,9 +3807,9 @@ type
       /// TCefPermissionRequestTypes that represent the requested permissions.</para>
       /// <para>Return true (1) and call ICefPermissionPromptCallback.Continue either
       /// in this function or at a later time to continue or cancel the request.</para>
-      /// <para>Return false (0) to proceed with default handling. With the Chrome
-      /// runtime, default handling will display the permission prompt UI. With the
-      /// Alloy runtime, default handling is CEF_PERMISSION_RESULT_IGNORE.</para>
+      /// <para>Return false (0) to proceed with default handling. With Chrome
+      /// style, default handling will display the permission prompt UI. With
+      /// Alloy style, default handling is CEF_PERMISSION_RESULT_IGNORE.</para>
       /// </summary>
       /// <remarks>
       /// <para>This event will be called on the browser process CEF UI thread.</para>
@@ -4081,7 +3924,7 @@ uses
   uCEFDownloadImageCallBack, uCEFCookieManager, uCEFRequestContextHandler,
   uCEFCookieVisitor, uCEFSetCookieCallback, uCEFResourceRequestHandler,
   uCEFMediaObserver, uCEFMediaRouteCreateCallback ,uCEFDevToolsMessageObserver,
-  uCEFMediaSinkDeviceInfoCallback, uCEFJson, uCEFExtensionHandler;
+  uCEFMediaSinkDeviceInfoCallback, uCEFJson;
 
 constructor TChromiumCore.Create(AOwner: TComponent);
 begin
@@ -4101,7 +3944,6 @@ begin
   FMediaObserverReg        := nil;
   FDevToolsMsgObserver     := nil;
   FDevToolsMsgObserverReg  := nil;
-  FExtensionHandler        := nil;
   FOptions                 := nil;
   FFontOptions             := nil;
   FDefaultEncoding         := '';
@@ -4136,6 +3978,10 @@ begin
   FEnableFocusDelayMs      := CEF_DEFAULT_ENABLEFOCUSDELAY;
   FComponentID             := 0;
   FDownloadBubble          := STATE_DEFAULT;
+  FHTTPSUpgrade            := STATE_DEFAULT;
+  FHSTSPolicyBypassList    := '';
+  FCredentialsService      := STATE_DEFAULT;
+  FTryingToCloseBrowser    := False;
   {$IFDEF LINUX}
   FXDisplay                := nil;
   {$ENDIF}
@@ -4415,23 +4261,8 @@ begin
   FDevToolsMsgObserver    := nil;
 end;
 
-procedure TChromiumCore.DestroyExtensionHandler;
-begin
-  try
-    if (FExtensionHandler <> nil) then
-      begin
-        FExtensionHandler.RemoveReferences;
-        FExtensionHandler := nil;
-      end;
-  except
-    on e : exception do
-      if CustomExceptionHandler('TChromiumCore.DestroyExtensionHandler', e) then raise;
-  end;
-end;
-
 procedure TChromiumCore.DestroyAllHandlersAndObservers;
 begin
-  DestroyExtensionHandler;
   DestroyDevToolsMsgObserver;
   DestroyMediaObserver;
   DestroyResourceRequestHandler;
@@ -4451,13 +4282,6 @@ begin
   if MustCreateDevToolsMessageObserver and
      (FDevToolsMsgObserver = nil) then
     FDevToolsMsgObserver := TCustomDevToolsMessageObserver.Create(self);
-end;
-
-procedure TChromiumCore.CreateExtensionHandler;
-begin
-  if MustCreateExtensionHandler and
-     (FExtensionHandler = nil) then
-    FExtensionHandler := TCustomExtensionHandler.Create(self);
 end;
 
 procedure TChromiumCore.CreateResourceRequestHandler;
@@ -4557,7 +4381,6 @@ begin
       CreateResourceRequestHandler;
       CreateMediaObserver;
       CreateDevToolsMsgObserver;
-      CreateExtensionHandler;
 
       aClient := FHandler;
       Result  := True;
@@ -4708,16 +4531,6 @@ begin
   FOnDevToolsAgentAttached            := nil;
   FOnDevToolsAgentDetached            := nil;
 
-  // ICefExtensionHandler
-  FOnExtensionLoadFailed              := nil;
-  FOnExtensionLoaded                  := nil;
-  FOnExtensionUnloaded                := nil;
-  FOnExtensionBeforeBackgroundBrowser := nil;
-  FOnExtensionBeforeBrowser           := nil;
-  FOnExtensionGetActiveBrowser        := nil;
-  FOnExtensionCanAccessBrowser        := nil;
-  FOnExtensionGetExtensionResource    := nil;
-
   // ICefPrintHandler
   FOnPrintStart                       := nil;
   FOnPrintSettings                    := nil;
@@ -4815,7 +4628,6 @@ begin
           CreateResourceRequestHandler;
           CreateMediaObserver;
           CreateDevToolsMsgObserver;
-          CreateExtensionHandler;
 
           if (aContext = nil) then
             TempOldContext := TCefRequestContextRef.Global()
@@ -4869,7 +4681,6 @@ begin
           CreateResourceRequestHandler;
           CreateMediaObserver;
           CreateDevToolsMsgObserver;
-          CreateExtensionHandler;
 
           if (aContext = nil) then
             TempOldContext := TCefRequestContextRef.Global()
@@ -5059,7 +4870,12 @@ end;
 procedure TChromiumCore.CloseBrowser(aForceClose : boolean);
 begin
   if Initialized then
-    Browser.Host.CloseBrowser(aForceClose);
+    begin
+      if (RuntimeStyle <> CEF_RUNTIME_STYLE_ALLOY) then
+        SetBrowserIsClosing(browser.Identifier);
+
+      Browser.Host.CloseBrowser(aForceClose);
+    end;
 end;
 
 procedure TChromiumCore.CloseAllBrowsers;
@@ -5074,9 +4890,26 @@ begin
 end;
 
 function TChromiumCore.TryCloseBrowser : boolean;
+var
+  TempTask : ICefTask;
 begin
   if Initialized then
-    Result := Browser.Host.TryCloseBrowser
+    begin
+      if FTryingToCloseBrowser then
+        Result := False
+       else
+        if CefCurrentlyOn(TID_UI) then
+          Result := doTryCloseBrowser
+         else
+          try
+            Result := False;
+            FTryingToCloseBrowser := True;
+            TempTask := TCefTryCloseBrowserTask.Create(self);
+            CefPostTask(TID_UI, TempTask);
+          finally
+            TempTask := nil;
+          end;
+    end
    else
     Result := True;
 end;
@@ -5149,9 +4982,12 @@ begin
   if Initialized then
     begin
       TempFrame := Browser.FocusedFrame;
-      if (TempFrame = nil) then TempFrame := Browser.MainFrame;
 
-      if (TempFrame <> nil) and TempFrame.IsValid then TempFrame.Copy;
+      if (TempFrame = nil) then
+        TempFrame := Browser.MainFrame;
+
+      if (TempFrame <> nil) and TempFrame.IsValid then
+        TempFrame.Copy;
     end;
 end;
 
@@ -5162,9 +4998,12 @@ begin
   if Initialized then
     begin
       TempFrame := Browser.FocusedFrame;
-      if (TempFrame = nil) then TempFrame := Browser.MainFrame;
 
-      if (TempFrame <> nil) and TempFrame.IsValid then TempFrame.Paste;
+      if (TempFrame = nil) then
+        TempFrame := Browser.MainFrame;
+
+      if (TempFrame <> nil) and TempFrame.IsValid then
+        TempFrame.Paste;
     end;
 end;
 
@@ -5175,9 +5014,12 @@ begin
   if Initialized then
     begin
       TempFrame := Browser.FocusedFrame;
-      if (TempFrame = nil) then TempFrame := Browser.MainFrame;
 
-      if (TempFrame <> nil) and TempFrame.IsValid then TempFrame.Cut;
+      if (TempFrame = nil) then
+        TempFrame := Browser.MainFrame;
+
+      if (TempFrame <> nil) and TempFrame.IsValid then
+        TempFrame.Cut;
     end;
 end;
 
@@ -5188,9 +5030,12 @@ begin
   if Initialized then
     begin
       TempFrame := Browser.FocusedFrame;
-      if (TempFrame = nil) then TempFrame := Browser.MainFrame;
 
-      if (TempFrame <> nil) and TempFrame.IsValid then TempFrame.Undo;
+      if (TempFrame = nil) then
+        TempFrame := Browser.MainFrame;
+
+      if (TempFrame <> nil) and TempFrame.IsValid then
+        TempFrame.Undo;
     end;
 end;
 
@@ -5201,9 +5046,12 @@ begin
   if Initialized then
     begin
       TempFrame := Browser.FocusedFrame;
-      if (TempFrame = nil) then TempFrame := Browser.MainFrame;
 
-      if (TempFrame <> nil) and TempFrame.IsValid then TempFrame.Redo;
+      if (TempFrame = nil) then
+        TempFrame := Browser.MainFrame;
+
+      if (TempFrame <> nil) and TempFrame.IsValid then
+        TempFrame.Redo;
     end;
 end;
 
@@ -5214,9 +5062,12 @@ begin
   if Initialized then
     begin
       TempFrame := Browser.FocusedFrame;
-      if (TempFrame = nil) then TempFrame := Browser.MainFrame;
 
-      if (TempFrame <> nil) and TempFrame.IsValid then TempFrame.Del;
+      if (TempFrame = nil) then
+        TempFrame := Browser.MainFrame;
+
+      if (TempFrame <> nil) and TempFrame.IsValid then
+        TempFrame.Del;
     end;
 end;
 
@@ -5227,9 +5078,12 @@ begin
   if Initialized then
     begin
       TempFrame := Browser.FocusedFrame;
-      if (TempFrame = nil) then TempFrame := Browser.MainFrame;
 
-      if (TempFrame <> nil) and TempFrame.IsValid then TempFrame.SelectAll;
+      if (TempFrame = nil) then
+        TempFrame := Browser.MainFrame;
+
+      if (TempFrame <> nil) and TempFrame.IsValid then
+        TempFrame.SelectAll;
     end;
 end;
 
@@ -5367,7 +5221,8 @@ begin
   if Initialized then
     begin
       TempFrame := Browser.MainFrame;
-      if (TempFrame <> nil) and TempFrame.IsValid then TempFrame.LoadRequest(aRequest);
+      if (TempFrame <> nil) and TempFrame.IsValid then
+        TempFrame.LoadRequest(aRequest);
     end;
 end;
 
@@ -5863,7 +5718,8 @@ begin
   if Initialized then
     begin
       TempFrame := Browser.MainFrame;
-      if (TempFrame <> nil) and TempFrame.IsValid then Result := TempFrame.URL;
+      if (TempFrame <> nil) and TempFrame.IsValid then
+        Result := TempFrame.URL;
     end;
 end;
 
@@ -6944,20 +6800,22 @@ end;
 
 procedure TChromiumCore.SimulateKeyEvent(      type_                 : TSimulatedCefKeyEventType;
                                                modifiers             : integer;
-                                               windowsVirtualKeyCode : integer;
-                                               nativeVirtualKeyCode  : integer;
-                                               timestamp             : integer;
-                                               location              : integer;
-                                               autoRepeat            : boolean;
-                                               isKeypad              : boolean;
-                                               isSystemKey           : boolean;
+                                               timestamp             : single;
                                          const text                  : ustring;
                                          const unmodifiedtext        : ustring;
                                          const keyIdentifier         : ustring;
                                          const code                  : ustring;
-                                         const key                   : ustring);
+                                         const key                   : ustring;
+                                               windowsVirtualKeyCode : integer;
+                                               nativeVirtualKeyCode  : integer;
+                                               autoRepeat            : boolean;
+                                               isKeypad              : boolean;
+                                               isSystemKey           : boolean;
+                                               location              : TCefKeyLocation;
+                                               commands              : TCefEditingCommand);
 var
   TempParams : ICefDictionaryValue;
+  TempList   : ICefListValue;
 begin
   try
     TempParams := TCefDictionaryValueRef.New;
@@ -6969,19 +6827,226 @@ begin
       ketChar       : TempParams.SetString('type', 'char');
     end;
 
-    TempParams.SetInt('modifiers', modifiers);
-    TempParams.SetInt('timestamp', timestamp);
-    TempParams.SetString('text', text);
-    TempParams.SetString('unmodifiedtext', unmodifiedtext);
-    TempParams.SetString('keyIdentifier', keyIdentifier);
-    TempParams.SetString('code', code);
-    TempParams.SetString('key', key);
-    TempParams.SetInt('windowsVirtualKeyCode', windowsVirtualKeyCode);
-    TempParams.SetInt('nativeVirtualKeyCode', nativeVirtualKeyCode);
-    TempParams.SetBool('autoRepeat', autoRepeat);
-    TempParams.SetBool('isKeypad', isKeypad);
-    TempParams.SetBool('isSystemKey', isSystemKey);
-    TempParams.SetInt('location', location);
+    if (modifiers <> CEF_MOUSETOUCH_EVENT_MODIFIERS_NONE) then
+      TempParams.SetInt('modifiers', modifiers);
+
+    if (timestamp <> 0) then
+      TempParams.SetDouble('timestamp', timestamp);
+
+    if (length(text) > 0) then
+      TempParams.SetString('text', text);
+
+    if (length(unmodifiedtext) > 0) then
+      TempParams.SetString('unmodifiedtext', unmodifiedtext);
+
+    if (length(keyIdentifier) > 0) then
+      TempParams.SetString('keyIdentifier', keyIdentifier);
+
+    if (length(code) > 0) then
+      TempParams.SetString('code', code);
+
+    if (length(key) > 0) then
+      TempParams.SetString('key', key);
+
+    if (windowsVirtualKeyCode <> 0) then
+      TempParams.SetInt('windowsVirtualKeyCode', windowsVirtualKeyCode);
+
+    if (nativeVirtualKeyCode <> 0) then
+      TempParams.SetInt('nativeVirtualKeyCode', nativeVirtualKeyCode);
+
+    if autoRepeat then
+      TempParams.SetBool('autoRepeat', autoRepeat);
+
+    if isKeypad then
+      TempParams.SetBool('isKeypad', isKeypad);
+
+    if isSystemKey then
+      TempParams.SetBool('isSystemKey', isSystemKey);
+
+    if (location <> CEF_KEYLOCATION_NONE) then
+      TempParams.SetInt('location', integer(location));
+
+    if (commands <> ecNone) then
+      begin
+        TempList := TCefListValueRef.New;
+        TempList.SetString(0, EditingCommandToString(commands));
+        TempParams.SetList('commands', TempList);
+      end;
+
+    ExecuteDevToolsMethod(0, 'Input.dispatchKeyEvent', TempParams);
+  finally
+    TempParams := nil;
+  end;
+end;
+
+procedure TChromiumCore.SimulateMouseEvent(type_              : TCefSimulatedMouseEventType;
+                                           x                  : single;
+                                           y                  : single;
+                                           modifiers          : integer;
+                                           timestamp          : single;
+                                           button             : TCefSimulatedMouseButton;
+                                           buttons            : integer;
+                                           clickCount         : integer;
+                                           force              : single;
+                                           tangentialPressure : single;
+                                           tiltX              : single;
+                                           tiltY              : single;
+                                           twist              : integer;
+                                           deltaX             : single;
+                                           deltaY             : single;
+                                           pointerType        : TCefSimulatedPointerType);
+var
+  TempParams : ICefDictionaryValue;
+begin
+  try
+    TempParams := TCefDictionaryValueRef.New;
+
+    case type_ of
+      mousePressed  : TempParams.SetString('type', 'mousePressed');
+      mouseReleased : TempParams.SetString('type', 'mouseReleased');
+      mouseMoved    : TempParams.SetString('type', 'mouseMoved');
+      mouseWheel    : TempParams.SetString('type', 'mouseWheel');
+    end;
+
+    TempParams.SetDouble('x', x);
+    TempParams.SetDouble('y', y);
+
+    if (modifiers <> CEF_MOUSETOUCH_EVENT_MODIFIERS_NONE) then
+      TempParams.SetInt('modifiers', modifiers);
+
+    if (timestamp <> 0) then
+      TempParams.SetDouble('timestamp', timestamp);
+
+    case button of
+      CEF_SIMULATEDMOUSEBUTTON_LEFT    : TempParams.SetString('button', 'left');
+      CEF_SIMULATEDMOUSEBUTTON_MIDDLE  : TempParams.SetString('button', 'middle');
+      CEF_SIMULATEDMOUSEBUTTON_RIGHT   : TempParams.SetString('button', 'right');
+      CEF_SIMULATEDMOUSEBUTTON_BACK    : TempParams.SetString('button', 'back');
+      CEF_SIMULATEDMOUSEBUTTON_FORWARD : TempParams.SetString('button', 'forward');
+    end;
+
+    if (buttons <> CEF_PRESSED_MOUSE_BUTTONS_NONE) then
+      TempParams.SetInt('buttons', buttons);
+
+    if (clickCount <> 0) then
+      TempParams.SetInt('clickCount', clickCount);
+
+    if (force <> 0) then
+      TempParams.SetDouble('force', force);
+
+    if (tangentialPressure <> 0) then
+      TempParams.SetDouble('tangentialPressure', tangentialPressure);
+
+    if (tiltX <> 0) then
+      TempParams.SetDouble('tiltX', tiltX);
+
+    if (tiltY <> 0) then
+      TempParams.SetDouble('tiltY', tiltY);
+
+    if (twist <> 0) then
+      TempParams.SetInt('twist', twist);
+
+    if (deltaX <> 0) then
+      TempParams.SetDouble('deltaX', deltaX);
+
+    if (deltaY <> 0) then
+      TempParams.SetDouble('deltaY', deltaY);
+
+    case pointerType of
+      CEF_SIMULATEDPOINTERTYPE_MOUSE : TempParams.SetString('pointerType', 'mouse');
+      CEF_SIMULATEDPOINTERTYPE_PEN   : TempParams.SetString('pointerType', 'pen');
+    end;
+
+    ExecuteDevToolsMethod(0, 'Input.dispatchMouseEvent', TempParams);
+  finally
+    TempParams := nil;
+  end;
+end;
+
+procedure TChromiumCore.SimulateTouchEvent(    type_       : TCefSimulatedTouchEventType;
+                                           var touchPoints : TCefSimulatedTouchPointArray;
+                                               modifiers   : integer;
+                                               timestamp   : single);
+var
+  TempParams    : ICefDictionaryValue;
+  TempPointList : ICefListValue;
+  TempPoint     : ICefDictionaryValue;
+  i             : integer;
+begin
+  try
+    TempParams := TCefDictionaryValueRef.New;
+
+    case type_ of
+      touchStart  : TempParams.SetString('type', 'touchStart');
+      touchEnd    : TempParams.SetString('type', 'touchEnd');
+      touchMove   : TempParams.SetString('type', 'touchMove');
+      touchCancel : TempParams.SetString('type', 'touchCancel');
+    end;
+
+    TempPointList := TCefListValueRef.New;
+    i             := 0;
+
+    while (i < length(touchPoints)) do
+      begin
+        TempPoint := TCefDictionaryValueRef.New;
+
+        TempPoint.SetInt('x', touchPoints[i].x);
+        TempPoint.SetInt('y', touchPoints[i].y);
+
+        if (touchPoints[i].radiusX <> 1) then
+          TempPoint.SetDouble('radiusX', touchPoints[i].radiusX);
+
+        if (touchPoints[i].radiusY <> 1) then
+          TempPoint.SetDouble('radiusY', touchPoints[i].radiusY);
+
+        if (touchPoints[i].rotationAngle <> 0) then
+          TempPoint.SetDouble('rotationAngle', touchPoints[i].rotationAngle);
+
+        if (touchPoints[i].force <> 1) then
+          TempPoint.SetDouble('force', touchPoints[i].force);
+
+        if (touchPoints[i].tangentialPressure <> 0) then
+          TempPoint.SetDouble('tangentialPressure', touchPoints[i].tangentialPressure);
+
+        if (touchPoints[i].tiltX <> 0) then
+          TempPoint.SetInt('tiltX', touchPoints[i].tiltX);
+
+        if (touchPoints[i].tiltY <> 0) then
+          TempPoint.SetInt('tiltY', touchPoints[i].tiltY);
+
+        if (touchPoints[i].twist <> 0) then
+          TempPoint.SetInt('twist', touchPoints[i].twist);
+
+        TempPointList.SetDictionary(i, TempPoint);
+        inc(i);
+      end;
+
+    TempParams.SetList('touchPoints', TempPointList);
+
+    if (modifiers <> CEF_MOUSETOUCH_EVENT_MODIFIERS_NONE) then
+      TempParams.SetInt('modifiers', modifiers);
+
+    if (timestamp <> 0) then
+      TempParams.SetDouble('timestamp', timestamp);
+
+    ExecuteDevToolsMethod(0, 'Input.dispatchTouchEvent', TempParams);
+  finally
+    TempParams := nil;
+  end;
+end;
+
+procedure TChromiumCore.SimulateEditingCommand(command : TCefEditingCommand);
+var
+  TempParams : ICefDictionaryValue;
+  TempList   : ICefListValue;
+begin
+  try
+    TempParams := TCefDictionaryValueRef.New;
+    TempParams.SetString('type', 'char');
+
+    TempList := TCefListValueRef.New;
+    TempList.SetString(0, EditingCommandToString(command));
+    TempParams.SetList('commands', TempList);
 
     ExecuteDevToolsMethod(0, 'Input.dispatchKeyEvent', TempParams);
   finally
@@ -7065,6 +7130,14 @@ begin
       UpdatePreference(aBrowser, 'download_bubble.partial_view_enabled', (FDownloadBubble = STATE_ENABLED));
       UpdatePreference(aBrowser, 'download_bubble_enabled',              (FDownloadBubble = STATE_ENABLED));
     end;
+
+  if (FHTTPSUpgrade <> STATE_DEFAULT) then
+    UpdatePreference(aBrowser, 'https_upgrades.policy.upgrades_enabled', (FHTTPSUpgrade = STATE_ENABLED));
+
+  UpdateStringListPref(aBrowser, 'hsts.policy.upgrade_bypass_list', FHSTSPolicyBypassList);
+
+  if (FCredentialsService <> STATE_DEFAULT) then
+    UpdatePreference(aBrowser, 'credentials_enable_service', (FCredentialsService = STATE_ENABLED));
 
   if assigned(FOnPrefsUpdated) then
     FOnPrefsUpdated(self);
@@ -7651,6 +7724,16 @@ begin
     AudioMuted := not(AudioMuted);
 end;
 
+function TChromiumCore.doTryCloseBrowser: boolean;
+begin
+  if Initialized then
+    Result := Browser.Host.TryCloseBrowser
+   else
+    Result := True;
+
+  FTryingToCloseBrowser := False;
+end;
+
 procedure TChromiumCore.doEnableFocus;
 begin
   FCanFocus := True;
@@ -7859,18 +7942,6 @@ begin
             assigned(FOnDevToolsRawEvent)        or
             assigned(FOnDevToolsAgentAttached)   or
             assigned(FOnDevToolsAgentDetached);
-end;
-
-function TChromiumCore.MustCreateExtensionHandler : boolean;
-begin
-  Result := assigned(FOnExtensionLoadFailed)              or
-            assigned(FOnExtensionLoaded)                  or
-            assigned(FOnExtensionUnloaded)                or
-            assigned(FOnExtensionBeforeBackgroundBrowser) or
-            assigned(FOnExtensionBeforeBrowser)           or
-            assigned(FOnExtensionGetActiveBrowser)        or
-            assigned(FOnExtensionCanAccessBrowser)        or
-            assigned(FOnExtensionGetExtensionResource);
 end;
 
 function TChromiumCore.MustCreatePrintHandler : boolean;
@@ -8773,85 +8844,6 @@ begin
     FOnDevToolsAgentDetached(self, browser);
 end;
 
-procedure TChromiumCore.doOnExtensionLoadFailed(result: TCefErrorcode);
-begin
-  if assigned(FOnExtensionLoadFailed) then
-    FOnExtensionLoadFailed(self, result);
-end;
-
-procedure TChromiumCore.doOnExtensionLoaded(const extension: ICefExtension);
-begin
-  if assigned(FOnExtensionLoaded) then
-    FOnExtensionLoaded(self, extension);
-end;
-
-procedure TChromiumCore.doOnExtensionUnloaded(const extension: ICefExtension);
-begin
-  if assigned(FOnExtensionUnloaded) then
-    FOnExtensionUnloaded(self, extension);
-end;
-
-function TChromiumCore.doOnExtensionBeforeBackgroundBrowser(const extension : ICefExtension;
-                                                            const url       : ustring;
-                                                            var   client    : ICefClient;
-                                                            var   settings  : TCefBrowserSettings) : boolean;
-begin
-  Result := False;
-
-  if assigned(FOnExtensionBeforeBackgroundBrowser) then
-    FOnExtensionBeforeBackgroundBrowser(self, extension, url, client, settings, Result);
-end;
-
-function TChromiumCore.doOnExtensionBeforeBrowser(const extension      : ICefExtension;
-                                                  const browser        : ICefBrowser;
-                                                  const active_browser : ICefBrowser;
-                                                        index          : Integer;
-                                                  const url            : ustring;
-                                                        active         : boolean;
-                                                  var   windowInfo     : TCefWindowInfo;
-                                                  var   client         : ICefClient;
-                                                  var   settings       : TCefBrowserSettings) : boolean;
-begin
-  Result := False;
-
-  if assigned(FOnExtensionBeforeBrowser) then
-    FOnExtensionBeforeBrowser(self, extension, browser, active_browser, index, url,
-                              active, windowInfo, client, settings, Result);
-end;
-
-procedure TChromiumCore.doOnExtensionGetActiveBrowser(const extension         : ICefExtension;
-                                                      const browser           : ICefBrowser;
-                                                            include_incognito : boolean;
-                                                      var   aRsltBrowser      : ICefBrowser);
-begin
-  aRsltBrowser := nil;
-
-  if assigned(FOnExtensionGetActiveBrowser) then
-    FOnExtensionGetActiveBrowser(self, extension, browser, include_incognito, aRsltBrowser);
-end;
-
-function TChromiumCore.doOnExtensionCanAccessBrowser(const extension         : ICefExtension;
-                                                     const browser           : ICefBrowser;
-                                                           include_incognito : boolean;
-                                                     const target_browser    : ICefBrowser): boolean;
-begin
-  Result := False;
-
-  if assigned(FOnExtensionCanAccessBrowser) then
-    FOnExtensionCanAccessBrowser(self, extension, browser, include_incognito, target_browser, Result);
-end;
-
-function TChromiumCore.doOnExtensionGetExtensionResource(const extension : ICefExtension;
-                                                         const browser   : ICefBrowser;
-                                                         const file_     : ustring;
-                                                         const callback  : ICefGetExtensionResourceCallback): boolean;
-begin
-  Result := False;
-
-  if assigned(FOnExtensionGetExtensionResource) then
-    FOnExtensionGetExtensionResource(self, extension, browser, file_, callback, Result);
-end;
-
 procedure TChromiumCore.doOnPrintStart(const browser: ICefBrowser);
 begin
   if assigned(FOnPrintStart) then
@@ -9386,7 +9378,7 @@ end;
 
 procedure TChromiumCore.doOnRenderProcessResponsive(const browser: ICefBrowser);
 begin
-  if assigned(FOnRenderProcessUnresponsive) then
+  if assigned(FOnRenderProcessResponsive) then
     FOnRenderProcessResponsive(Self, browser);
 end;
 
@@ -9929,104 +9921,6 @@ begin
       aMediaSink.GetDeviceInfo(TempCallback);
     finally
       TempCallback := nil;
-    end;
-end;
-
-function TChromiumCore.LoadExtension(const root_directory : ustring;
-                                     const manifest       : ICefDictionaryValue;
-                                     const handler        : ICefExtensionHandler;
-                                     const requestContext : ICefRequestContext) : boolean;
-var
-  TempContext : ICefRequestContext;
-  TempHandler : ICefExtensionHandler;
-begin
-  Result := False;
-
-  // The global context must be initalized to load extensions
-  // This TChromium must not be initialized before loading an extension.
-  if (GlobalCEFApp = nil) or
-     not(GlobalCEFApp.GlobalContextInitialized) or
-     Initialized then
-    exit;
-
-  // We use a custom request context if available or the global request context if not.
-  if (requestContext <> nil) then
-    TempContext := requestContext
-   else
-    TempContext := TCefRequestContextRef.Global;
-
-  if (handler <> nil) then
-    TempHandler := handler
-   else
-    begin
-      // All TChromium events must be assigned before calling LoadExtension.
-      CreateExtensionHandler;
-      TempHandler := FExtensionHandler;
-    end;
-
-  if (TempContext <> nil) then
-    try
-      TempContext.LoadExtension(root_directory, manifest, TempHandler);
-      Result := True;
-    finally
-      TempHandler := nil;
-    end;
-end;
-
-function TChromiumCore.DidLoadExtension(const extension_id: ustring): boolean;
-var
-  TempContext : ICefRequestContext;
-begin
-  Result := False;
-
-  if Initialized then
-    begin
-      TempContext := Browser.Host.RequestContext;
-      Result      := (TempContext <> nil) and
-                     TempContext.DidLoadExtension(extension_id);
-    end;
-end;
-
-function TChromiumCore.HasExtension(const extension_id: ustring): boolean;
-var
-  TempContext : ICefRequestContext;
-begin
-  Result := False;
-
-  if Initialized then
-    begin
-      TempContext := Browser.Host.RequestContext;
-      Result      := (TempContext <> nil) and
-                     TempContext.HasExtension(extension_id);
-    end;
-end;
-
-function TChromiumCore.GetExtensions(const extension_ids: TStringList): boolean;
-var
-  TempContext : ICefRequestContext;
-begin
-  Result := False;
-
-  if Initialized and (extension_ids <> nil) then
-    begin
-      TempContext := Browser.Host.RequestContext;
-      Result      := (TempContext <> nil) and
-                     TempContext.GetExtensions(extension_ids);
-    end;
-end;
-
-function TChromiumCore.GetExtension(const extension_id: ustring): ICefExtension;
-var
-  TempContext : ICefRequestContext;
-begin
-  Result := nil;
-
-  if Initialized then
-    begin
-      TempContext := Browser.Host.RequestContext;
-
-      if (TempContext <> nil) then
-        Result := TempContext.GetExtension(extension_id);
     end;
 end;
 

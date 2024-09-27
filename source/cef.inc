@@ -1,5 +1,5 @@
  // The complete list of compiler versions is here :
- // http://docwiki.embarcadero.com/RADStudio/Tokyo/en/Compiler_Versions
+ // https://docwiki.embarcadero.com/RADStudio/Athens/en/Compiler_Versions
 
 {$DEFINE DELPHI_VERSION_UNKNOW}
 
@@ -393,7 +393,7 @@
   {$DEFINE DELPHI28_UP}
 {$ENDIF}
 
-// Rad Studio 12.0 - Delphi Yukon
+// Rad Studio 12.0 - Delphi Athens
 {$IFDEF VER360}
   {$UNDEF DELPHI_VERSION_UNKNOW}
   {$DEFINE DELPHI5_UP}
@@ -505,4 +505,22 @@
   {$ELSE}
     {$DEFINE LINUXFMX}
   {$ENDIF}
-{$ENDIF}  
+{$ENDIF}
+
+// OS_POSIX is defined for AIX, ANDROID, ASMJS, CHROMEOS, FREEBSD, IOS, LINUX,
+// MAC, NACL, NETBSD, OPENBSD, QNX and SOLARIS in /include/base/cef_build.h
+{$IFDEF FPC}
+  {$IF DEFINED(AIX) OR
+       DEFINED(ANDROID) OR
+       DEFINED(BSD) OR
+       DEFINED(LINUX) OR
+       DEFINED(DARWIN) OR
+       DEFINED(QNX) OR
+       DEFINED(SOLARIS)}
+    {$DEFINE OS_POSIX}
+  {$IFEND}
+{$ELSE}
+  {$IFDEF POSIX}
+    {$DEFINE OS_POSIX}
+  {$ENDIF}
+{$ENDIF}

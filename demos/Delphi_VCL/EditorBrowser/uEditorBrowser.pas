@@ -57,6 +57,10 @@ type
     RemoveFormatBtn: TToolButton;
     OutdentBtn: TToolButton;
     Separator7: TToolButton;
+    ToolButton1: TToolButton;
+    CopyBtn: TToolButton;
+    CutBtn: TToolButton;
+    PasteBtn: TToolButton;
 
     procedure Timer1Timer(Sender: TObject);
 
@@ -65,7 +69,6 @@ type
     procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
 
     procedure Chromium1AfterCreated(Sender: TObject; const browser: ICefBrowser);
-    procedure Chromium1Close(Sender: TObject; const browser: ICefBrowser; var aAction : TCefCloseBrowserAction);
     procedure Chromium1BeforeClose(Sender: TObject; const browser: ICefBrowser);
     procedure Chromium1LoadEnd(Sender: TObject; const browser: ICefBrowser; const frame: ICefFrame; httpStatusCode: Integer);
     procedure Chromium1TextResultAvailable(Sender: TObject;  const aText: ustring);
@@ -92,6 +95,9 @@ type
     procedure FillColorBtnClick(Sender: TObject);
     procedure RemoveFormatBtnClick(Sender: TObject);
     procedure OutdentBtnClick(Sender: TObject);
+    procedure CopyBtnClick(Sender: TObject);
+    procedure CutBtnClick(Sender: TObject);
+    procedure PasteBtnClick(Sender: TObject);
 
   protected
     // Variables to control when can we destroy the form safely
@@ -108,7 +114,6 @@ type
     procedure WMExitMenuLoop(var aMessage: TMessage); message WM_EXITMENULOOP;
 
     procedure BrowserCreatedMsg(var aMessage : TMessage); message CEF_AFTERCREATED;
-    procedure BrowserDestroyMsg(var aMessage : TMessage); message CEF_DESTROY;
   public
     { Public declarations }
   end;
@@ -136,9 +141,8 @@ uses
 
 // Destruction steps
 // =================
-// 1. FormCloseQuery sets CanClose to FALSE calls TChromium.CloseBrowser which triggers the TChromium.OnClose event.
-// 2. TChromium.OnClose sends a CEFBROWSER_DESTROY message to destroy CEFWindowParent1 in the main thread, which triggers the TChromium.OnBeforeClose event.
-// 3. TChromium.OnBeforeClose sets FCanClose := True and sends WM_CLOSE to the form.
+// 1. FormCloseQuery sets CanClose to FALSE, destroys CEFWindowParent1 and calls TChromium.CloseBrowser which triggers the TChromium.OnBeforeClose event.
+// 2. TChromium.OnBeforeClose sets FCanClose := True and sends WM_CLOSE to the form.
 
 procedure CreateGlobalCEFApp;
 begin
@@ -172,6 +176,7 @@ begin
       FClosing := True;
       Visible  := False;
       Chromium1.CloseBrowser(True);
+      CEFWindowParent1.Free;
     end;
 end;
 
@@ -211,13 +216,6 @@ procedure TEditorBrowserFrm.Chromium1BeforeContextMenu(Sender: TObject;
   const params: ICefContextMenuParams; const model: ICefMenuModel);
 begin
   model.AddItem(MINIBROWSER_CONTEXTMENU_SHOWDEVTOOLS, 'Show DevTools');
-end;
-
-procedure TEditorBrowserFrm.Chromium1Close(Sender: TObject;
-  const browser: ICefBrowser; var aAction : TCefCloseBrowserAction);
-begin
-  PostMessage(Handle, CEF_DESTROY, 0, 0);
-  aAction := cbaDelay;
 end;
 
 procedure TEditorBrowserFrm.Chromium1ContextMenuCommand(Sender: TObject;
@@ -272,6 +270,16 @@ begin
     finally
       if (TempLines <> nil) then FreeAndNil(TempLines);
     end;
+end;
+
+procedure TEditorBrowserFrm.CopyBtnClick(Sender: TObject);
+begin
+  Chromium1.SimulateEditingCommand(ecCopy);
+end;
+
+procedure TEditorBrowserFrm.CutBtnClick(Sender: TObject);
+begin
+  Chromium1.SimulateEditingCommand(ecCut);
 end;
 
 procedure TEditorBrowserFrm.TextColorBtnClick(Sender: TObject);
@@ -470,11 +478,6 @@ begin
   Caption := 'Editor Browser';
 end;
 
-procedure TEditorBrowserFrm.BrowserDestroyMsg(var aMessage : TMessage);
-begin
-  CEFWindowParent1.Free;
-end;
-
 procedure TEditorBrowserFrm.Timer1Timer(Sender: TObject);
 begin
   Timer1.Enabled := False;
@@ -506,6 +509,11 @@ begin
   TempCode := 'document.execCommand("outdent", false, null);';
 
   Chromium1.ExecuteJavaScript(TempCode, 'about:blank');
+end;
+
+procedure TEditorBrowserFrm.PasteBtnClick(Sender: TObject);
+begin
+  Chromium1.SimulateEditingCommand(ecPaste);
 end;
 
 procedure TEditorBrowserFrm.RemoveFormatBtnClick(Sender: TObject);
